@@ -124,9 +124,11 @@ begin
     raise exception 'bad event';
   end if;
   insert into locker_test_events (serial, kind) values (p_serial, p_event);
-  if p_event in ('unlocked', 'locked') then
-    update locker_test_devices set locked = (p_event = 'locked'), last_seen = now() where serial = p_serial;
-  end if;
+  -- a latch move ends any entry in progress, so the stored keys go with it
+  update locker_test_devices set typed = '', typed_at = now(),
+    locked = case when p_event in ('unlocked', 'locked') then p_event = 'locked' else locked end,
+    last_seen = now()
+   where serial = p_serial;
   return jsonb_build_object('ok', true);
 end $$;
 
