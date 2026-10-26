@@ -137,10 +137,11 @@
     try { render(await rpc('locker_test_state', {})); $('err').textContent = ''; }
     catch (e) { if (/unauthorized/.test(e.message)) return signOut('That password did not work. After 20 wrong tries the site locks for 15 minutes.'); $('err').textContent = 'Could not reach the site: ' + e.message; }
   }
-  // one loop for the whole page; buttons call refresh() so they never start a second one
+  // one loop for the whole page; buttons call refresh() so they never start a second one. Fast
+  // while the tab is open so the keypad view keeps up, slow in the background
   async function poll() {
     if (pw) await refresh();
-    setTimeout(poll, 1500);
+    setTimeout(poll, document.hidden ? 5000 : 400);
   }
 
   async function act(btn, fn, args) {
