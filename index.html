@@ -29,6 +29,12 @@
   ul { list-style:none; margin:0; padding:0; font-size:14px; }
   li { display:flex; justify-content:space-between; gap:12px; padding:7px 0; border-bottom:1px solid var(--line); }
   li span:last-child { color:var(--muted); white-space:nowrap; }
+  .entry { display:flex; justify-content:center; gap:8px; margin:4px 0 14px; }
+  .entry span { width:44px; height:52px; border-radius:10px; border:2px solid var(--line); display:flex; align-items:center;
+                justify-content:center; font-size:26px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .entry span.on { border-color:var(--ink); }
+  .entry span.ok { border-color:var(--open); color:var(--open); }
+  .entry span.bad { border-color:var(--bad); color:var(--bad); }
   .err { color:var(--bad); font-size:14px; margin-top:10px; min-height:20px; }
   .hide { display:none; }
 </style>
@@ -49,6 +55,8 @@
       <p><span id="dot" class="dot"></span><span id="conn">Checking...</span></p>
       <div class="label">Pickup code</div>
       <div class="code none" id="code">No active code</div>
+      <div class="label" style="margin-top:4px">On the keypad now</div>
+      <div class="entry" id="entry" aria-live="polite"></div>
       <div class="status" id="status">--</div>
       <div class="row">
         <button class="primary wide" id="new">New pickup code</button>
@@ -59,7 +67,7 @@
     </div>
     <div class="card">
       <h2>How to test</h2>
-      <p>Make a code, type it on the locker keypad and press #. Codes work once and expire after 15 minutes. Unlock and Lock reach the locker on its next check-in, about a second.</p>
+      <p>Make a code, type it on the locker keypad (digits and A to D) and press #. * clears what you typed. The boxes above fill in as each key is pressed. Codes work once and expire after 15 minutes. Unlock and Lock reach the locker on its next check-in, about a second.</p>
     </div>
     <div class="card">
       <h2>Activity</h2>
@@ -103,6 +111,14 @@
     const active = st.codes.find(c => !c.used_at && new Date(c.expires_at) > new Date(st.now));
     $('code').textContent = active ? active.code : 'No active code';
     $('code').className = 'code' + (active ? '' : ' none');
+    // each key shows as typed; green while it matches the active code so far, red once it does not
+    const typed = d.typed || '';
+    const slots = Math.max(5, typed.length);
+    $('entry').innerHTML = Array.from({ length: slots }, (_, i) => {
+      const ch = typed[i] || '';
+      const cls = !ch ? '' : !active ? 'on' : active.code[i] === ch ? 'ok' : 'bad';
+      return '<span class="' + cls + '">' + ch + '</span>';
+    }).join('');
     const last = st.events[0];
     let text = d.locked === false ? 'Unlocked' : d.locked ? 'Locked' : 'Unknown';
     let tone = d.locked === false ? 'open' : '';

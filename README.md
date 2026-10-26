@@ -28,11 +28,12 @@ app's `smart_locks` later only means changing the endpoint:
 
 | Locker calls | When | Mirrors the app's |
 | --- | --- | --- |
-| `locker_test_poll(key, serial, locked)` | About once a second; returns `"unlock"`, `"lock"` or `null` | lock check-in |
+| `locker_test_poll(key, serial, locked, typed)` | About once a second and on every keypress; returns `"unlock"`, `"lock"` or `null`. `typed` drives the live keypad view | lock check-in |
 | `locker_test_submit_code(key, serial, code)` | When # is pressed; returns `{ok, granted, reason}` | `device_submit_code` |
 | `locker_test_report_event(key, serial, event)` | After the latch moves: `unlocked`, `locked`, `boot` | `device_report_event` |
 
-Codes are 5 digits, single use, and expire after 15 minutes, like the app's pickup codes. Five
+Codes are 5 keys long, digits and A to D, single use, and expire after 15 minutes. The app's own
+pickup codes are 5 digits only, so this is the one place the test differs. Five
 wrong codes in 15 minutes pause the keypad.
 
 ## Running it

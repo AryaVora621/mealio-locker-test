@@ -1,6 +1,6 @@
 -- Mealio locker test: wireless lock/unlock for the ESP32 bench locker, kept in the live mealio
 -- project under locker_test_* so it never touches the app's own lockers or reservations tables.
--- Shapes follow the app (a locker has a serial and locked/online state; codes are 5-digit,
+-- Shapes follow the app (a locker has a serial and locked/online state; codes are 5 keys (digits and A-D),
 -- one use, expiring) so the device contract can move to the real tables later.
 --
 -- No table is readable or writable by anon/authenticated directly. Everything goes through the
@@ -19,13 +19,15 @@ create table if not exists public.locker_test_devices (
   last_seen timestamptz,
   command text check (command in ('lock', 'unlock')),
   command_at timestamptz,
+  typed text,             -- what is on the keypad right now, for the site's live view
+  typed_at timestamptz,
   created_at timestamptz not null default now()
 );
 
 create table if not exists public.locker_test_codes (
   id uuid primary key default gen_random_uuid(),
   serial text not null references public.locker_test_devices(serial) on delete cascade,
-  code text not null check (code ~ '^[0-9]{5}$'),
+  code text not null check (code ~ '^[0-9A-D]{5}$'),  -- digits and A-D, all keypad keys but * and #
   created_at timestamptz not null default now(),
   expires_at timestamptz not null,
   used_at timestamptz
@@ -56,15 +58,17 @@ revoke execute on function public.locker_test_auth(text, text) from public, anon
 
 -- Device check-in, about once a second: records it is online and whether it is locked, and hands
 -- over a pending lock/unlock from the site (once; commands older than 30 s are dropped).
-create or replace function public.locker_test_poll(p_key text, p_serial text, p_locked boolean)
+create or replace function public.locker_test_poll(p_key text, p_serial text, p_locked boolean, p_typed text default null)
 returns text language plpgsql security definer set search_path = public as $$
 declare
   v_cmd text;
   v_at timestamptz;
 begin
   if not locker_test_auth('device', p_key) then raise exception 'unauthorized'; end if;
-  insert into locker_test_devices (serial, locked, last_seen) values (p_serial, p_locked, now())
-    on conflict (serial) do update set locked = excluded.locked, last_seen = now()
+  insert into locker_test_devices (serial, locked, last_seen, typed, typed_at)
+    values (p_serial, p_locked, now(), left(coalesce(p_typed, ''), 8), now())
+    on conflict (serial) do update set locked = excluded.locked, last_seen = now(),
+      typed = excluded.typed, typed_at = now()
     returning command, command_at into v_cmd, v_at;
   if v_cmd is not null then
     update locker_test_devices set command = null, command_at = null where serial = p_serial;
@@ -88,7 +92,7 @@ begin
     insert into locker_test_events (serial, kind) values (p_serial, 'keypad_rate_limited');
     return jsonb_build_object('ok', true, 'granted', false, 'reason', 'rate_limited', 'retry_after_minutes', 15);
   end if;
-  if p_code is null or p_code !~ '^[0-9]{5}$' then
+  if p_code is null or p_code !~ '^[0-9A-D]{5}$' then
     v_reason := 'malformed';
   else
     update locker_test_codes set used_at = now()
@@ -107,7 +111,7 @@ begin
   end if;
   -- wrong codes are logged by length only, so the log never holds a near-miss guess
   insert into locker_test_events (serial, kind, detail)
-    values (p_serial, 'code_rejected', v_reason || ', ' || char_length(coalesce(p_code, '')) || ' digits');
+    values (p_serial, 'code_rejected', v_reason || ', ' || char_length(coalesce(p_code, '')) || ' keys');
   return jsonb_build_object('ok', true, 'granted', false, 'reason', v_reason);
 end $$;
 
@@ -146,13 +150,19 @@ revoke execute on function public.locker_test_admin_ok(text) from public, anon, 
 create or replace function public.locker_test_new_code(p_key text, p_serial text, p_minutes int)
 returns json language plpgsql security definer set search_path = public, extensions as $$
 declare
-  v_code text;
+  v_alphabet constant text := '0123456789ABCD';
+  v_code text := '';
+  v_byte int;
   v_row locker_test_codes;
 begin
   if not locker_test_admin_ok(p_key) then return json_build_object('error', 'unauthorized'); end if;
   insert into locker_test_devices (serial) values (p_serial) on conflict do nothing;
-  -- 10000-99999 like the app's reservation codes, from a CSPRNG rather than random()
-  v_code := (10000 + (('x' || encode(gen_random_bytes(4), 'hex'))::bit(32)::bigint % 90000))::text;
+  -- 5 keys from the 14 the keypad can type (# submits, * clears); bytes of 252 and up are
+  -- redrawn so every key is equally likely
+  while char_length(v_code) < 5 loop
+    v_byte := get_byte(gen_random_bytes(1), 0);
+    if v_byte < 252 then v_code := v_code || substr(v_alphabet, v_byte % 14 + 1, 1); end if;
+  end loop;
   insert into locker_test_codes (serial, code, expires_at)
     values (p_serial, v_code, now() + make_interval(mins => least(greatest(coalesce(p_minutes, 15), 1), 1440)))
     returning * into v_row;
@@ -177,7 +187,8 @@ begin
   if not locker_test_admin_ok(p_key) then return json_build_object('error', 'unauthorized'); end if;
   return json_build_object(
     'device', (select json_build_object('serial', serial, 'locked', locked, 'last_seen', last_seen,
-                                        'online', last_seen > now() - interval '10 seconds', 'command', command)
+                                        'online', last_seen > now() - interval '10 seconds', 'command', command,
+                                        'typed', case when typed_at > now() - interval '10 seconds' then coalesce(typed, '') else '' end)
                  from locker_test_devices where serial = p_serial),
     'codes', coalesce((select json_agg(c order by c.created_at desc) from (
                 select code, created_at, expires_at, used_at from locker_test_codes
@@ -188,9 +199,9 @@ begin
     'now', now());
 end $$;
 
-revoke execute on function public.locker_test_poll(text, text, boolean), public.locker_test_submit_code(text, text, text), public.locker_test_report_event(text, text, text),
+revoke execute on function public.locker_test_poll(text, text, boolean, text), public.locker_test_submit_code(text, text, text), public.locker_test_report_event(text, text, text),
   public.locker_test_new_code(text, text, int), public.locker_test_command(text, text, text),
   public.locker_test_state(text, text) from public;
-grant execute on function public.locker_test_poll(text, text, boolean), public.locker_test_submit_code(text, text, text), public.locker_test_report_event(text, text, text),
+grant execute on function public.locker_test_poll(text, text, boolean, text), public.locker_test_submit_code(text, text, text), public.locker_test_report_event(text, text, text),
   public.locker_test_new_code(text, text, int), public.locker_test_command(text, text, text),
   public.locker_test_state(text, text) to anon, authenticated;
