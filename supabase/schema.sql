@@ -126,13 +126,30 @@ begin
   return jsonb_build_object('ok', true);
 end $$;
 
+-- Admin check for the site's functions. Wrong passwords are logged and, after 20 in 15 minutes,
+-- every admin call is refused (the right password too) until the window passes, so the public
+-- endpoint cannot be used to guess the password. The callers return {error} instead of raising,
+-- because raising would roll back the logged failure.
+create or replace function public.locker_test_admin_ok(p_key text)
+returns boolean language plpgsql security definer set search_path = public as $$
+begin
+  if (select count(*) from locker_test_events where serial = '-' and kind = 'admin_auth_failed'
+        and created_at > now() - interval '15 minutes') >= 20 then
+    return false;
+  end if;
+  if locker_test_auth('admin', p_key) then return true; end if;
+  insert into locker_test_events (serial, kind) values ('-', 'admin_auth_failed');
+  return false;
+end $$;
+revoke execute on function public.locker_test_admin_ok(text) from public, anon, authenticated;
+
 create or replace function public.locker_test_new_code(p_key text, p_serial text, p_minutes int)
 returns json language plpgsql security definer set search_path = public, extensions as $$
 declare
   v_code text;
   v_row locker_test_codes;
 begin
-  if not locker_test_auth('admin', p_key) then raise exception 'unauthorized'; end if;
+  if not locker_test_admin_ok(p_key) then return json_build_object('error', 'unauthorized'); end if;
   insert into locker_test_devices (serial) values (p_serial) on conflict do nothing;
   -- 10000-99999 like the app's reservation codes, from a CSPRNG rather than random()
   v_code := (10000 + (('x' || encode(gen_random_bytes(4), 'hex'))::bit(32)::bigint % 90000))::text;
@@ -144,19 +161,20 @@ begin
 end $$;
 
 create or replace function public.locker_test_command(p_key text, p_serial text, p_command text)
-returns void language plpgsql security definer set search_path = public as $$
+returns json language plpgsql security definer set search_path = public as $$
 begin
-  if not locker_test_auth('admin', p_key) then raise exception 'unauthorized'; end if;
+  if not locker_test_admin_ok(p_key) then return json_build_object('error', 'unauthorized'); end if;
   if p_command not in ('lock', 'unlock') then raise exception 'bad command'; end if;
   insert into locker_test_devices (serial) values (p_serial) on conflict do nothing;
   update locker_test_devices set command = p_command, command_at = now() where serial = p_serial;
   insert into locker_test_events (serial, kind) values (p_serial, 'command_' || p_command);
+  return json_build_object('ok', true);
 end $$;
 
 create or replace function public.locker_test_state(p_key text, p_serial text)
-returns json language plpgsql stable security definer set search_path = public as $$
+returns json language plpgsql security definer set search_path = public as $$
 begin
-  if not locker_test_auth('admin', p_key) then raise exception 'unauthorized'; end if;
+  if not locker_test_admin_ok(p_key) then return json_build_object('error', 'unauthorized'); end if;
   return json_build_object(
     'device', (select json_build_object('serial', serial, 'locked', locked, 'last_seen', last_seen,
                                         'online', last_seen > now() - interval '10 seconds', 'command', command)

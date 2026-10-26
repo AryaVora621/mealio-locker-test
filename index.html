@@ -84,6 +84,7 @@
     const text = await r.text();
     const body = text ? JSON.parse(text) : null;
     if (!r.ok) throw new Error(body && body.message || 'HTTP ' + r.status);
+    if (body && body.error) throw new Error(body.error);
     return body;
   }
 
@@ -116,7 +117,7 @@
 
   async function refresh() {
     try { render(await rpc('locker_test_state', {})); $('err').textContent = ''; }
-    catch (e) { if (/unauthorized/.test(e.message)) return signOut('That password did not work.'); $('err').textContent = 'Could not reach the site: ' + e.message; }
+    catch (e) { if (/unauthorized/.test(e.message)) return signOut('That password did not work. After 20 wrong tries the site locks for 15 minutes.'); $('err').textContent = 'Could not reach the site: ' + e.message; }
   }
   // one loop for the whole page; buttons call refresh() so they never start a second one
   async function poll() {
@@ -136,7 +137,7 @@
 
   $('go').onclick = async () => {
     pw = $('pw').value.trim();
-    try { await rpc('locker_test_state', {}); } catch (e) { return signOut(/unauthorized/.test(e.message) ? 'That password did not work.' : e.message); }
+    try { await rpc('locker_test_state', {}); } catch (e) { return signOut(/unauthorized/.test(e.message) ? 'That password did not work. After 20 wrong tries the site locks for 15 minutes.' : e.message); }
     try { localStorage.setItem('mealio-admin', pw); } catch (e) {}
     show(); refresh();
   };
