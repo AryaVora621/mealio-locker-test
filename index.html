@@ -114,10 +114,12 @@
     // each key shows as typed; green while it matches the active code so far, red once it does not
     const typed = d.typed || '';
     const slots = Math.max(5, typed.length);
+    // '*' is a key the locker hid: an entry that starts like the restock code is never shown
     $('entry').innerHTML = Array.from({ length: slots }, (_, i) => {
       const ch = typed[i] || '';
-      const cls = !ch ? '' : !active ? 'on' : active.code[i] === ch ? 'ok' : 'bad';
-      return '<span class="' + cls + '">' + ch + '</span>';
+      const hidden = ch === '*';
+      const cls = !ch ? '' : hidden || !active ? 'on' : active.code[i] === ch ? 'ok' : 'bad';
+      return '<span class="' + cls + '">' + (hidden ? '\u2022' : ch) + '</span>';
     }).join('');
     const last = st.events[0];
     let text = d.locked === false ? 'Unlocked' : d.locked ? 'Locked' : 'Unknown';
