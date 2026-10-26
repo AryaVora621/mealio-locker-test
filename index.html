@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mealio Locker Test</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#1b1f24; --muted:#667085; --line:#e4e7ec; --accent:#1d6f42; --accent-ink:#fff; --bad:#d92d20; --open:#12b76a; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#111418; --card:#1a1f25; --ink:#e8eaed; --muted:#98a2b3; --line:#2b323b; --accent:#3fb871; --accent-ink:#0b1a11; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  main { max-width:520px; margin:24px auto; padding:0 16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:20px; margin-bottom:16px; }
+  h1 { font-size:20px; margin:0 0 4px; } h2 { font-size:15px; margin:0 0 10px; }
+  p { margin:0; color:var(--muted); font-size:14px; }
+  .label { font-size:13px; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; margin-top:16px; }
+  .code { font-size:56px; font-weight:700; letter-spacing:.12em; text-align:center; margin:4px 0 8px; font-variant-numeric:tabular-nums; }
+  .code.none { color:var(--muted); font-size:20px; letter-spacing:0; padding:20px 0; }
+  .status { text-align:center; font-size:22px; font-weight:700; padding:14px; border-radius:10px; background:var(--bg); }
+  .status.open { background:var(--open); color:#fff; } .status.bad { background:var(--bad); color:#fff; }
+  .row { display:grid; grid-template-columns:repeat(2, 1fr); gap:10px; margin-top:12px; }
+  button, input { font:inherit; padding:12px; border-radius:10px; border:1px solid var(--line); background:var(--bg); color:var(--ink); }
+  button { font-weight:600; cursor:pointer; } button:disabled { opacity:.5; cursor:default; }
+  button.primary { background:var(--accent); color:var(--accent-ink); border-color:var(--accent); }
+  button.wide { grid-column:1 / -1; }
+  input { width:100%; }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--bad); margin-right:6px; }
+  .dot.ok { background:var(--open); }
+  ul { list-style:none; margin:0; padding:0; font-size:14px; }
+  li { display:flex; justify-content:space-between; gap:12px; padding:7px 0; border-bottom:1px solid var(--line); }
+  li span:last-child { color:var(--muted); white-space:nowrap; }
+  .err { color:var(--bad); font-size:14px; margin-top:10px; min-height:20px; }
+  .hide { display:none; }
+</style>
+</head>
+<body>
+<main>
+  <div class="card hide" id="signin">
+    <h1>Mealio locker test</h1>
+    <p style="margin-bottom:12px">Enter the admin password to control the bench locker.</p>
+    <input id="pw" type="password" autocomplete="current-password" placeholder="Admin password" aria-label="Admin password">
+    <div class="row"><button class="primary wide" id="go">Sign in</button></div>
+    <div class="err" id="pw-err"></div>
+  </div>
+
+  <div id="app" class="hide">
+    <div class="card">
+      <h1>Mealio locker</h1>
+      <p><span id="dot" class="dot"></span><span id="conn">Checking...</span></p>
+      <div class="label">Pickup code</div>
+      <div class="code none" id="code">No active code</div>
+      <div class="status" id="status">--</div>
+      <div class="row">
+        <button class="primary wide" id="new">New pickup code</button>
+        <button id="unlock">Unlock</button>
+        <button id="lock">Lock</button>
+      </div>
+      <div class="err" id="err"></div>
+    </div>
+    <div class="card">
+      <h2>How to test</h2>
+      <p>Make a code, type it on the locker keypad and press #. Codes work once and expire after 15 minutes. Unlock and Lock reach the locker on its next check-in, about a second.</p>
+    </div>
+    <div class="card">
+      <h2>Activity</h2>
+      <ul id="events"></ul>
+    </div>
+    <p style="text-align:center"><button id="signout" style="background:none;border:none;color:var(--muted)">Sign out</button></p>
+  </div>
+</main>
+<script>
+  // Supabase project and publishable key: public by design. Every function checks the admin
+  // password (or the locker's device key) in the database, and the tables are closed to direct reads.
+  const API = 'https://oynuxrbmbmrzosmhcrud.supabase.co/rest/v1/rpc/';
+  const KEY = 'sb_publishable_D_HtbDuHtlvwS9fDPCtOWg_mCg3fVTo';
+  const SERIAL = 'mealio-v0-1';
+  const $ = id => document.getElementById(id);
+  let pw = '';
+  try { pw = localStorage.getItem('mealio-admin') || ''; } catch (e) {}
+
+  async function rpc(fn, args) {
+    const r = await fetch(API + fn, { method: 'POST', headers: { apikey: KEY, 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ p_key: pw, p_serial: SERIAL, ...args }) });
+    const text = await r.text();
+    const body = text ? JSON.parse(text) : null;
+    if (!r.ok) throw new Error(body && body.message || 'HTTP ' + r.status);
+    return body;
+  }
+
+  const LABELS = {
+    code_created: 'Code created', code_accepted: 'Code accepted', code_rejected: 'Code refused',
+    keypad_rate_limited: 'Keypad paused: too many wrong codes', command_unlock: 'Unlock sent from site',
+    command_lock: 'Lock sent from site', unlocked: 'Locker unlocked', locked: 'Locker locked', boot: 'Locker restarted',
+    unlock_failed: 'Unlock failed', door_opened: 'Door opened', door_closed: 'Door closed',
+  };
+  const ago = t => { const s = Math.max(0, Math.round((Date.now() - new Date(t)) / 1000)); return s < 60 ? s + 's ago' : s < 3600 ? Math.round(s / 60) + 'm ago' : new Date(t).toLocaleTimeString(); };
+
+  function render(st) {
+    const d = st.device || {};
+    $('dot').className = 'dot' + (d.online ? ' ok' : '');
+    $('conn').textContent = d.online ? 'Locker online' : d.last_seen ? 'Locker offline, last seen ' + ago(d.last_seen) : 'Locker has not checked in yet';
+    const active = st.codes.find(c => !c.used_at && new Date(c.expires_at) > new Date(st.now));
+    $('code').textContent = active ? active.code : 'No active code';
+    $('code').className = 'code' + (active ? '' : ' none');
+    const last = st.events[0];
+    let text = d.locked === false ? 'Unlocked' : d.locked ? 'Locked' : 'Unknown';
+    let tone = d.locked === false ? 'open' : '';
+    if (d.command) text = (d.command === 'unlock' ? 'Unlocking' : 'Locking') + '...';
+    else if (last && last.kind === 'code_rejected' && Date.now() - new Date(last.created_at) < 8000) { text = 'Wrong code'; tone = 'bad'; }
+    $('status').textContent = text;
+    $('status').className = 'status' + (tone ? ' ' + tone : '');
+    $('events').innerHTML = st.events.map(e => '<li><span>' + (LABELS[e.kind] || e.kind) +
+      (e.kind === 'code_rejected' && e.detail ? ' (' + e.detail.split(',')[0] + ')' : '') + '</span><span>' + ago(e.created_at) + '</span></li>').join('') ||
+      '<li><span>Nothing yet</span><span></span></li>';
+  }
+
+  async function refresh() {
+    try { render(await rpc('locker_test_state', {})); $('err').textContent = ''; }
+    catch (e) { if (/unauthorized/.test(e.message)) return signOut('That password did not work.'); $('err').textContent = 'Could not reach the site: ' + e.message; }
+  }
+  // one loop for the whole page; buttons call refresh() so they never start a second one
+  async function poll() {
+    if (pw) await refresh();
+    setTimeout(poll, 1500);
+  }
+
+  async function act(btn, fn, args) {
+    btn.disabled = true;
+    try { await rpc(fn, args); $('err').textContent = ''; await refresh(); }
+    catch (e) { $('err').textContent = e.message; }
+    btn.disabled = false;
+  }
+
+  function show() { $('signin').className = pw ? 'card hide' : 'card'; $('app').className = pw ? '' : 'hide'; }
+  function signOut(msg) { pw = ''; try { localStorage.removeItem('mealio-admin'); } catch (e) {} $('pw-err').textContent = msg || ''; show(); }
+
+  $('go').onclick = async () => {
+    pw = $('pw').value.trim();
+    try { await rpc('locker_test_state', {}); } catch (e) { return signOut(/unauthorized/.test(e.message) ? 'That password did not work.' : e.message); }
+    try { localStorage.setItem('mealio-admin', pw); } catch (e) {}
+    show(); refresh();
+  };
+  $('pw').onkeydown = e => { if (e.key === 'Enter') $('go').click(); };
+  $('new').onclick = () => act($('new'), 'locker_test_new_code', { p_minutes: 15 });
+  $('unlock').onclick = () => act($('unlock'), 'locker_test_command', { p_command: 'unlock' });
+  $('lock').onclick = () => act($('lock'), 'locker_test_command', { p_command: 'lock' });
+  $('signout').onclick = () => signOut();
+  show();
+  poll();
+</script>
+</body>
+</html>
